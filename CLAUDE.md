@@ -54,6 +54,21 @@ npm run test:oauth       # Test OAuth flows
 npm run test:security    # Run security tests
 ```
 
+## CRITICAL RULES - READ CAREFULLY
+
+### ⚠️ Database Sync Rules
+
+**EXTREMELY IMPORTANT: `sqliteService.syncInitialData()` and `sqliteService.sync()` should ONLY be called ONCE when the app launches. NEVER call these methods after user actions like creating/updating tasks.**
+
+- ✅ CORRECT: Call sync methods only during app initialization
+- ❌ WRONG: Calling sync after creating tasks, updating tasks, or any user action
+- ❌ WRONG: Using sync to "refresh" data after API calls
+
+The app follows a **push-only** pattern after initialization:
+- Changes are pushed to backend immediately when online
+- Local SQLite is updated simultaneously
+- NO periodic pulling from backend after initial sync
+
 ## Architecture
 
 ### Data Sync Architecture
