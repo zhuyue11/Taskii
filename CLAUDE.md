@@ -69,6 +69,34 @@ The app follows a **push-only** pattern after initialization:
 - Local SQLite is updated simultaneously
 - NO periodic pulling from backend after initial sync
 
+### ⚠️ Local-First Architecture Rules
+
+**EXTREMELY IMPORTANT: The app is LOCAL-FIRST/OFFLINE-FIRST. Never rely on server response data for local state.**
+
+- ✅ CORRECT: Use local data for all UI updates and local database operations
+- ✅ CORRECT: Send data to server, but continue using local data regardless of server response
+- ❌ WRONG: Using server response data to update local SQLite or UI state
+- ❌ WRONG: Trusting that server response contains all necessary fields
+
+**Key Principle**: The app must work offline. Local SQLite is the source of truth for the UI. Server responses are only used for confirmation that sync succeeded, never for data content.
+
+**Example of CORRECT pattern**:
+```typescript
+// ✅ CORRECT: Create task with local data, save locally, then sync to server
+const taskData = { title, description, originalTaskId, ... };
+const localTask = await sqliteService.createTask(taskData); // Uses local data
+await apiService.createTask(taskData); // Send to server but ignore response
+// UI uses localTask data, not server response
+```
+
+**Example of WRONG pattern**:
+```typescript
+// ❌ WRONG: Relying on server response data
+const response = await apiService.createTask(taskData);
+await sqliteService.saveTaskFromServer(response); // Don't do this!
+// This breaks offline-first architecture
+```
+
 ## Architecture
 
 ### Data Sync Architecture
