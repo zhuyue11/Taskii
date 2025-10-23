@@ -238,40 +238,141 @@ The app includes IP detection for testing on physical devices:
 - Background sync service reconciles with backend when online
 - Prevents duplicate operations (e.g., deleting an already-deleted task)
 
-### 35-Week Cache System
+### Infinite Scroll Calendar System
 
-The app implements a **35-week rolling cache** for optimal performance when viewing tasks:
+The app implements a sophisticated **infinite scroll system** for the calendar with a two-tier architecture:
 
-1. **Cache Structure** (`TaskiiApp/screens/HomeScreen.tsx`):
-   - Maintains a 35-week window of tasks in memory (17 weeks before + current week + 17 weeks after)
-   - Cache is centered on the current week and stored in `cache35Weeks` state
-   - Includes both regular tasks and task instances for recurring tasks
+#### 1. Multi-Layer Architecture
 
-2. **Loading Strategy**:
-   - `load35WeekCache(centerWeekStart)`: Loads tasks and instances for 35-week window from SQLite
-   - Automatically reloads when user scrolls >10 weeks from cache center
-   - Combines tasks with dates and unplanned tasks in single cache
+- **SQLite Storage Layer**: Persistent storage with dynamic boundary expansion
+  - Initial Range: 71 weeks (±35 from current week)
+  - Expands by 15 weeks when window edges approach boundaries
+  - Tracks `furthest_past_week` and `furthest_future_week` in generation metadata
 
-3. **Data Flow**:
-   ```
-   SQLite Database → 35-Week Cache → View-Specific Filtering → UI Display
-   ```
+- **51-Week Sliding Window** (`weeks` state in ExpandableCalendar.tsx):
+  - **FIXED SIZE**: Always 51 weeks (25 before + current + 25 after)
+  - **Sliding Mechanism**: Shifts by 5 weeks when scrolling near edges
+  - **Window Regeneration**: Rebuilds entire window when navigating outside 51-week range
+  - Data loaded from SQLite via `calculateWeekData()`
 
-4. **Cache Updates**:
-   - After any task modification (create/update/delete/complete)
-   - After marking recurring task instances as complete
-   - When navigating to dates outside current cache window
-   - During initial app load and data sync
+- **UI Rendering Layer**:
+  - Expanded view: 5 weeks visible
+  - Collapsed view: 1 week visible
+  - FlatList for smooth scrolling
 
-5. **Performance Benefits**:
-   - Reduces SQLite queries by maintaining tasks in memory
-   - Enables smooth calendar scrolling without database hits
-   - Supports offline-first architecture with local data priority
+#### 2. Key Constants
 
-6. **Implementation Details**:
-   - Calendar component (`ExpandableCalendar.tsx`) generates 35 weeks of UI
-   - HomeScreen filters cache based on current view (day/week/5-week)
-   - Task instances loaded separately but displayed alongside regular tasks
+```typescript
+const WEEKS_BUFFER = 25;              // Center position (25 before + current + 25 after)
+const WINDOW_SIZE = 51;               // Total weeks in sliding window (FIXED)
+const SHIFT_SIZE = 5;                 // Weeks to add/remove when sliding
+const SHIFT_THRESHOLD = 20;           // Trigger shift within 20 weeks of edge
+const SQLITE_EXTENSION_WEEKS = 15;    // SQLite expansion size
+```
+
+#### 3. Two-Tier Check System (`checkAndExtendGeneration()`)
+
+**Tier 1: Window Sliding (weeks state)**
+- Triggers when scroll position within 20 weeks of either edge (SHIFT_THRESHOLD)
+- Shifts window by 5 weeks in scroll direction
+- Removes 5 weeks from opposite end
+- Maintains 51-week total size
+
+**Tier 2: SQLite Boundary Expansion**
+- Triggers when window edge within 10 weeks (2 × SHIFT_SIZE) of SQLite boundary
+- Extends SQLite by 15 weeks in needed direction
+- Generates task instances for ALL recurring tasks in extended range
+- Updates generation metadata (furthest_past_week/furthest_future_week)
+
+#### 4. Navigation Behavior
+
+**Within 51-week window:**
+- Scroll to target week (no regeneration needed)
+- Update `currentWeekIndex` immediately for both expanded/collapsed views
+- Manually trigger `checkAndExtendGeneration()` for boundary checks
+
+**Outside 51-week window:**
+- Regenerate entire 51-week window centered on target date via `ensureWeeksAroundDateLoaded()`
+- Load data from SQLite for new window range
+- Extend SQLite boundaries if target date outside current SQLite range
+
+#### 5. Critical Implementation Rules
+
+- ✅ **51-week window is FIXED SIZE** - it slides, never grows
+- ✅ **checkAndExtendGeneration() is ESSENTIAL** - handles both tiers (window sliding + SQLite expansion)
+- ✅ **NEVER remove checkAndExtendGeneration() calls** - breaks infinite scroll
+- ✅ **Update currentWeekIndex immediately** when navigating in both expanded and collapsed views (don't rely solely on scroll callbacks)
+- ✅ **Use callback form of setWeeks** to avoid race conditions when updating
+- ✅ **filteredTasks depends on currentWeekIndex** - ensure it's updated before deselecting dates
+
+#### 6. State Update Pattern for New Tasks
+
+```typescript
+// ✅ CORRECT: Use callback form to work with latest state
+setWeeks(prevWeeks => {
+  const instances = generateInstances(prevWeeks, ...);
+  return prevWeeks.map(week => /* update with instances */);
+});
+
+// ❌ WRONG: Accessing weeks directly can cause race conditions
+const instances = generateInstances(weeks, ...);
+setWeeks(/* update */);
+```
+
+#### 7. Task Creation and Navigation Flow
+
+When creating a task for a date not in the current view:
+1. Save task to SQLite
+2. Check if date is in weeks state (51-week window)
+3. If yes: update weeks state in-memory with `updateTaskInCalendar()`
+4. Navigate to date if not visible: `navigateToDate()` updates `currentWeekIndex` immediately
+5. Select the date to show the task
+6. **On deselect**: `filteredTasks` recalculates based on `currentWeekIndex` and shows all tasks from visible weeks
+
+#### 8. Performance Optimizations
+
+- **Fixed Window Size**: Prevents unbounded memory growth (constant 51 weeks)
+- **Lazy Loading**: Prioritizes visible weeks, fills surrounding weeks in background
+- **Pre-calculated Data**: Week data processed once via `calculateWeekData()` and cached
+- **Background SQLite Expansion**: Async generation without blocking UI
+- **Incremental Updates**: Only updates affected weeks when data changes
+
+
+## Code Quality & Anti-Patterns
+
+### ⚠️ setTimeout Usage Guidelines
+
+**CRITICAL: Always question if `setTimeout` is actually needed before using it.**
+
+#### When `setTimeout` IS appropriate:
+- ✅ **Delaying execution** for UI animations or user experience
+- ✅ **Debouncing/throttling** user input
+- ✅ **Breaking up CPU-intensive work** to avoid blocking the main thread
+- ✅ **Coordinating with React lifecycle** (rare cases where you need to wait for renders)
+
+#### When `setTimeout` is NOT needed:
+- ❌ **In async functions** - just use `await` directly
+- ❌ **"Making something asynchronous"** - if it's already async, don't wrap it
+- ❌ **Database/network operations** - these are already non-blocking
+- ❌ **State updates** - React already batches these efficiently
+
+**Key Question**: "What am I actually trying to delay/defer, and why?" If the answer is "nothing, I just want it to run in the background" - then `setTimeout` is probably wrong.
+
+**Example of WRONG pattern**:
+```typescript
+// ❌ WRONG: Wrapping async work in setTimeout
+setTimeout(async () => {
+  await sqliteService.generateInstances();
+  await updateWeeksState();
+}, 0);
+```
+
+**Example of CORRECT pattern**:
+```typescript
+// ✅ CORRECT: Direct async execution
+await sqliteService.generateInstances();
+await updateWeeksState();
+```
 
 ## Security Considerations
 

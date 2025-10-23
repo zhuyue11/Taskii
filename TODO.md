@@ -1,0 +1,3 @@
+- [ ] Replace TaskPanel with TaskEditPanel in ExpandableCalendar.tsx
+- [ ] Delete old TaskPanel.tsx component
+- [ ] Delete TaskPanelData type from types/task.ts
